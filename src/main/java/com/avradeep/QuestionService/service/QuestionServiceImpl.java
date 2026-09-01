@@ -4,9 +4,13 @@ import com.avradeep.QuestionService.client.AIClient;
 import com.avradeep.QuestionService.client.QuizClient;
 import com.avradeep.QuestionService.dto.*;
 import com.avradeep.QuestionService.entity.Document;
+import com.avradeep.QuestionService.entity.DocumentChunk;
 import com.avradeep.QuestionService.entity.GenerationStatus;
 import com.avradeep.QuestionService.entity.Question;
 import com.avradeep.QuestionService.exceptions.DocumentExtractionException;
+import com.avradeep.QuestionService.rag.chunk.TextChunker;
+import com.avradeep.QuestionService.rag.retrieval.RagRetrievalService;
+import com.avradeep.QuestionService.rag.vectorstore.VectorStoreService;
 import com.avradeep.QuestionService.repository.DocumentRepository;
 import com.avradeep.QuestionService.repository.QuestionRepository;
 import com.avradeep.QuestionService.util.extractor.DocumentExtractor;
@@ -30,6 +34,9 @@ public class QuestionServiceImpl implements QuestionService {
     private final DocumentExtractorFactory extractorFactory;
     private final AIClient aiClient;
     private final QuizClient quizClient;
+    private final RagRetrievalService ragRetrievalService;
+    private final TextChunker textChunker;
+    private final VectorStoreService vectorStoreService;
 
     // ================= USER METHODS =================
 
@@ -142,8 +149,7 @@ public class QuestionServiceImpl implements QuestionService {
                 "Generating {} {} questions from document {}",
                 request.getNumberOfQuestions(),
                 request.getDifficulty(),
-                request.getDocumentId()
-        );
+                request.getDocumentId());
 
         // =========================================
         // 1. Validate request
@@ -151,24 +157,18 @@ public class QuestionServiceImpl implements QuestionService {
 
         if (request.getDocumentId() == null ||
                 request.getDocumentId().isBlank()) {
-
             throw new IllegalArgumentException(
-                    "Document ID cannot be null or empty."
-            );
+                    "Document ID cannot be null or empty.");
         }
 
         if (request.getNumberOfQuestions() <= 0) {
-
             throw new IllegalArgumentException(
-                    "Number of questions must be greater than zero."
-            );
+                    "Number of questions must be greater than zero.");
         }
 
         if (request.getDifficulty() == null) {
-
             throw new IllegalArgumentException(
-                    "Difficulty cannot be null."
-            );
+                    "Difficulty cannot be null.");
         }
 
         // =========================================
@@ -179,26 +179,20 @@ public class QuestionServiceImpl implements QuestionService {
                 documentRepository
                         .findById(request.getDocumentId())
                         .orElseThrow(() -> {
-
                             log.error(
                                     "Document not found: {}",
                                     request.getDocumentId()
                             );
-
                             return new RuntimeException(
                                     "Document not found: "
-                                            + request.getDocumentId()
-                            );
+                                            + request.getDocumentId());
                         });
 
         // =========================================
         // 3. Get appropriate extractor
         // =========================================
 
-        DocumentExtractor extractor =
-                extractorFactory.getExtractor(
-                        document.getFileType()
-                );
+        DocumentExtractor extractor = extractorFactory.getExtractor(document.getFileType());
 
         // =========================================
         // 4. Extract document content
@@ -208,36 +202,26 @@ public class QuestionServiceImpl implements QuestionService {
 
         try {
 
-            extractedDocument =
-                    extractor.extract(
-                            document.getFilePath()
-                    );
+            extractedDocument = extractor.extract(document.getFilePath());
 
-            Files.writeString(
-                    Path.of("debug-extracted-document.txt"),
-                    extractedDocument.getText()
-            );
+            Files.writeString(Path.of("debug-extracted-document.txt"),
+                    extractedDocument.getText());
 
         } catch (IOException e) {
 
-            log.error(
-                    "Failed to extract content from document: {}",
+            log.error("Failed to extract content from document: {}",
                     request.getDocumentId(),
-                    e
-            );
+                    e);
 
-            throw new DocumentExtractionException(
-                    "Failed to extract content from document.",
-                    e
-            );
+            throw new DocumentExtractionException("Failed to extract content from document.",
+                    e);
         }
 
         // =========================================
         // 5. Get extracted text
         // =========================================
 
-        String extractedText =
-                extractedDocument.getText();
+        String extractedText = extractedDocument.getText();
 
         // =========================================
         // 6. Validate extracted content
@@ -246,49 +230,162 @@ public class QuestionServiceImpl implements QuestionService {
         if (extractedText == null ||
                 extractedText.isBlank()) {
 
-            log.error(
-                    "No usable content extracted from document: {}",
-                    request.getDocumentId()
-            );
+            log.error("No usable content extracted from document: {}",
+                    request.getDocumentId());
 
-            throw new IllegalStateException(
-                    "No usable content could be extracted from the document."
-            );
+            throw new IllegalStateException("No usable content could be " +
+                    "extracted from the document.");
         }
 
         // =========================================
         // 7. Log extraction statistics
         // =========================================
 
-        log.info(
-                "Document extraction completed. " +
+        log.info("Document extraction completed. " +
                         "Pages: {}, Native chars: {}, " +
                         "OCR chars: {}, Total chars: {}",
                 extractedDocument.getPageCount(),
                 extractedDocument.getTextCharacterCount(),
                 extractedDocument.getOcrCharacterCount(),
-                extractedText.length()
+                extractedText.length());
+
+        // =========================================
+        // 8. Chunk extracted document
+        // =========================================
+
+        List<DocumentChunk> chunks =
+                textChunker.chunk(
+                        document.getId(),
+                        extractedText
+                );
+
+        log.info(
+                "Document chunking completed. " +
+                        "documentId: {}, chunks: {}",
+                document.getId(),
+                chunks.size()
         );
 
         // =========================================
-        // 8. Build AI request
+        // 9. Store chunks in Vector Store
+        // =========================================
+
+        vectorStoreService.storeChunks(chunks);
+
+        log.info(
+                "Document chunks embedded and stored. " +
+                        "documentId: {}, chunks: {}",
+                document.getId(),
+                chunks.size()
+        );
+
+        // =========================================
+        // 10. Get quiz information
+        // =========================================
+
+        String quizId = document.getQuizId();
+
+        if (quizId == null || quizId.isBlank()) {
+
+            throw new IllegalStateException(
+                    "Quiz ID is missing for document: "
+                            + document.getId()
+            );
+        }
+
+        /**
+          Get the quiz from QUIZ-SERVICE.
+         */
+
+        QuizResponse quiz =
+                quizClient.getQuizById(quizId);
+
+        if (quiz == null ||
+                quiz.getTitle() == null ||
+                quiz.getTitle().isBlank()) {
+
+            throw new IllegalStateException(
+                    "Quiz title could not be found for quizId: "
+                            + quizId
+            );
+        }
+
+        String quizTitle = quiz.getTitle();
+
+        log.info(
+                "RAG retrieval query: '{}', documentId: {}",
+                quizTitle,
+                document.getId()
+        );
+
+        // =========================================
+        // 11. Retrieve relevant chunks using RAG
+        // =========================================
+
+        List<org.springframework.ai.document.Document>
+                retrievedDocuments =
+                ragRetrievalService.retrieve(
+                        document.getId(),
+                        quizTitle,
+                        5
+                );
+
+        log.info(
+                "RAG retrieval completed. " +
+                        "documentId: {}, query: {}, chunks retrieved: {}",
+                document.getId(),
+                quizTitle,
+                retrievedDocuments.size()
+        );
+
+        // =========================================
+        // 12. Build context from retrieved chunks
+        // =========================================
+
+        String retrievedContext =
+                retrievedDocuments.stream()
+                        .map(org.springframework.ai.document.Document
+                                        ::getText)
+                        .filter(text -> text != null && !text.isBlank())
+                        .collect(java.util.stream.Collectors.joining("\n\n"));
+
+        // =========================================
+        // 13. Validate retrieved context
+        // =========================================
+
+        if (retrievedContext.isBlank()) {
+            log.error("No relevant context found through RAG. " +
+                            "documentId: {}, query: {}",
+                    document.getId(),
+                    quizTitle
+            );
+            throw new IllegalStateException("No relevant content found in the document "
+                    + "for quiz: " + quizTitle);
+        }
+
+        log.info("RAG context created successfully. " +
+                        "Context characters: {}",
+                retrievedContext.length());
+
+        // =========================================
+        // 14. Build AI request
         // =========================================
 
         AiGenerateQuestionRequest aiRequest =
                 AiGenerateQuestionRequest.builder()
-                        .extractedText(extractedText)
+                        .extractedText(retrievedContext)
                         .difficulty(request.getDifficulty())
-                        .numberOfQuestions(
-                                request.getNumberOfQuestions()
-                        )
+                        .numberOfQuestions(request.getNumberOfQuestions())
                         .build();
 
-        log.info(
-                "Sending extracted document content to AI-SERVICE."
-        );
+        log.info("Sending RAG-retrieved context to AI-SERVICE. " +
+                        "Quiz: {}, Questions: {}, Difficulty: {}",
+                quizTitle,
+                request.getNumberOfQuestions(),
+                request.getDifficulty());
 
         // =========================================
-        // 9. Call AI-SERVICE
+        // 15. Call AI-SERVICE
         // =========================================
 
         return aiClient.generateQuestions(aiRequest);

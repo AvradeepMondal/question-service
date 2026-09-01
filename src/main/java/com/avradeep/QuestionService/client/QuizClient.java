@@ -1,6 +1,7 @@
 package com.avradeep.QuestionService.client;
 
 import com.avradeep.QuestionService.dto.QuizQuestionCountResponse;
+import com.avradeep.QuestionService.dto.QuizResponse;
 import com.avradeep.QuestionService.dto.UpdateQuestionCountRequest;
 import com.avradeep.QuestionService.security.FeignTokenPropagationConfig;
 import org.springframework.cloud.openfeign.FeignClient;
@@ -16,5 +17,10 @@ public interface QuizClient {
     QuizQuestionCountResponse updateQuestionCount(
             @PathVariable("quizId") String quizId,
             @RequestBody UpdateQuestionCountRequest request
+    );
+
+    @GetMapping("/api/quiz/{quizId}")
+    QuizResponse getQuizById(
+            @PathVariable("quizId") String quizId
     );
 }
