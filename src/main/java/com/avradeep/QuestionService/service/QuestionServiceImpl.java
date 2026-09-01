@@ -327,7 +327,7 @@ public class QuestionServiceImpl implements QuestionService {
                 ragRetrievalService.retrieve(
                         document.getId(),
                         quizTitle,
-                        5
+                        6
                 );
 
         log.info(
