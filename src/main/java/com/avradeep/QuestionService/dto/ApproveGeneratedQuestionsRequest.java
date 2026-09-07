@@ -15,5 +15,7 @@ public class ApproveGeneratedQuestionsRequest {
 
     private String documentId;
 
+    private String quizId;
+
     private List<GeneratedQuestionResponse> questions;
 }

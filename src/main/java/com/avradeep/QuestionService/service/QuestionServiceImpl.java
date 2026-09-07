@@ -4,24 +4,15 @@ import com.avradeep.QuestionService.client.AIClient;
 import com.avradeep.QuestionService.client.QuizClient;
 import com.avradeep.QuestionService.dto.*;
 import com.avradeep.QuestionService.entity.Document;
-import com.avradeep.QuestionService.entity.DocumentChunk;
-import com.avradeep.QuestionService.entity.GenerationStatus;
+import com.avradeep.QuestionService.entity.DocumentStatus;
 import com.avradeep.QuestionService.entity.Question;
-import com.avradeep.QuestionService.exceptions.DocumentExtractionException;
-import com.avradeep.QuestionService.rag.chunk.TextChunker;
 import com.avradeep.QuestionService.rag.retrieval.RagRetrievalService;
-import com.avradeep.QuestionService.rag.vectorstore.VectorStoreService;
 import com.avradeep.QuestionService.repository.DocumentRepository;
 import com.avradeep.QuestionService.repository.QuestionRepository;
-import com.avradeep.QuestionService.util.extractor.DocumentExtractor;
-import com.avradeep.QuestionService.util.extractor.DocumentExtractorFactory;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.List;
 
 @Service
@@ -31,12 +22,9 @@ public class QuestionServiceImpl implements QuestionService {
 
     private final QuestionRepository questionRepository;
     private final DocumentRepository documentRepository;
-    private final DocumentExtractorFactory extractorFactory;
     private final AIClient aiClient;
     private final QuizClient quizClient;
     private final RagRetrievalService ragRetrievalService;
-    private final TextChunker textChunker;
-    private final VectorStoreService vectorStoreService;
 
     // ================= USER METHODS =================
 
@@ -149,7 +137,8 @@ public class QuestionServiceImpl implements QuestionService {
                 "Generating {} {} questions from document {}",
                 request.getNumberOfQuestions(),
                 request.getDifficulty(),
-                request.getDocumentId());
+                request.getDocumentId()
+        );
 
         // =========================================
         // 1. Validate request
@@ -157,16 +146,19 @@ public class QuestionServiceImpl implements QuestionService {
 
         if (request.getDocumentId() == null ||
                 request.getDocumentId().isBlank()) {
+
             throw new IllegalArgumentException(
                     "Document ID cannot be null or empty.");
         }
 
         if (request.getNumberOfQuestions() <= 0) {
+
             throw new IllegalArgumentException(
                     "Number of questions must be greater than zero.");
         }
 
         if (request.getDifficulty() == null) {
+
             throw new IllegalArgumentException(
                     "Difficulty cannot be null.");
         }
@@ -181,121 +173,62 @@ public class QuestionServiceImpl implements QuestionService {
                         .orElseThrow(() -> {
                             log.error(
                                     "Document not found: {}",
-                                    request.getDocumentId()
-                            );
+                                    request.getDocumentId());
+
                             return new RuntimeException(
                                     "Document not found: "
                                             + request.getDocumentId());
                         });
 
         // =========================================
-        // 3. Get appropriate extractor
+        // 3. Check document processing status
         // =========================================
 
-        DocumentExtractor extractor = extractorFactory.getExtractor(document.getFileType());
-
-        // =========================================
-        // 4. Extract document content
-        // =========================================
-
-        ExtractedDocument extractedDocument;
-
-        try {
-
-            extractedDocument = extractor.extract(document.getFilePath());
-
-            Files.writeString(Path.of("debug-extracted-document.txt"),
-                    extractedDocument.getText());
-
-        } catch (IOException e) {
-
-            log.error("Failed to extract content from document: {}",
-                    request.getDocumentId(),
-                    e);
-
-            throw new DocumentExtractionException("Failed to extract content from document.",
-                    e);
-        }
-
-        // =========================================
-        // 5. Get extracted text
-        // =========================================
-
-        String extractedText = extractedDocument.getText();
-
-        // =========================================
-        // 6. Validate extracted content
-        // =========================================
-
-        if (extractedText == null ||
-                extractedText.isBlank()) {
-
-            log.error("No usable content extracted from document: {}",
-                    request.getDocumentId());
-
-            throw new IllegalStateException("No usable content could be " +
-                    "extracted from the document.");
-        }
-
-        // =========================================
-        // 7. Log extraction statistics
-        // =========================================
-
-        log.info("Document extraction completed. " +
-                        "Pages: {}, Native chars: {}, " +
-                        "OCR chars: {}, Total chars: {}",
-                extractedDocument.getPageCount(),
-                extractedDocument.getTextCharacterCount(),
-                extractedDocument.getOcrCharacterCount(),
-                extractedText.length());
-
-        // =========================================
-        // 8. Chunk extracted document
-        // =========================================
-
-        List<DocumentChunk> chunks =
-                textChunker.chunk(
-                        document.getId(),
-                        extractedText
-                );
-
-        log.info(
-                "Document chunking completed. " +
-                        "documentId: {}, chunks: {}",
-                document.getId(),
-                chunks.size()
-        );
-
-        // =========================================
-        // 9. Store chunks in Vector Store
-        // =========================================
-
-        vectorStoreService.storeChunks(chunks);
-
-        log.info(
-                "Document chunks embedded and stored. " +
-                        "documentId: {}, chunks: {}",
-                document.getId(),
-                chunks.size()
-        );
-
-        // =========================================
-        // 10. Get quiz information
-        // =========================================
-
-        String quizId = document.getQuizId();
-
-        if (quizId == null || quizId.isBlank()) {
-
+        if (document.getStatus() == DocumentStatus.PROCESSING) {
             throw new IllegalStateException(
-                    "Quiz ID is missing for document: "
-                            + document.getId()
-            );
+                    "Document is still being processed. Please try again later.");
         }
 
-        /**
-          Get the quiz from QUIZ-SERVICE.
-         */
+        if (document.getStatus() == DocumentStatus.FAILED) {
+            throw new IllegalStateException(
+                    "Document processing failed. Please process the document again.");
+        }
+
+        if (document.getStatus() != DocumentStatus.READY) {
+            throw new IllegalStateException(
+                    "Document is not ready for question generation. Current status: "
+                            + document.getStatus());
+        }
+
+        log.info(
+                "Document is ready for question generation. " +
+                        "documentId: {}",
+                document.getId());
+
+        // =========================================
+        // 4. Get quiz information
+        // =========================================
+
+        String quizId = request.getQuizId();
+
+        if (quizId == null ||
+                quizId.isBlank()) {
+
+            throw new IllegalArgumentException(
+                    "Quiz ID cannot be null or empty.");
+        }
+
+        // Verify that the document belongs to this quiz
+
+        List<String> documentIds =
+                quizClient.getDocumentIdsByQuizId(quizId);
+
+        if (!documentIds.contains(document.getId())) {
+
+            throw new IllegalArgumentException(
+                    "Document " + document.getId() +
+                            " does not belong to quiz " + quizId);
+        }
 
         QuizResponse quiz =
                 quizClient.getQuizById(quizId);
@@ -306,20 +239,14 @@ public class QuestionServiceImpl implements QuestionService {
 
             throw new IllegalStateException(
                     "Quiz title could not be found for quizId: "
-                            + quizId
-            );
+                            + quizId);
         }
 
-        String quizTitle = quiz.getTitle();
-
-        log.info(
-                "RAG retrieval query: '{}', documentId: {}",
-                quizTitle,
-                document.getId()
-        );
+        String quizTitle =
+                quiz.getTitle();
 
         // =========================================
-        // 11. Retrieve relevant chunks using RAG
+        // 5. Retrieve relevant chunks using RAG
         // =========================================
 
         List<org.springframework.ai.document.Document>
@@ -327,65 +254,72 @@ public class QuestionServiceImpl implements QuestionService {
                 ragRetrievalService.retrieve(
                         document.getId(),
                         quizTitle,
-                        6
-                );
+                        6);
 
         log.info(
                 "RAG retrieval completed. " +
                         "documentId: {}, query: {}, chunks retrieved: {}",
                 document.getId(),
                 quizTitle,
-                retrievedDocuments.size()
-        );
+                retrievedDocuments.size());
 
         // =========================================
-        // 12. Build context from retrieved chunks
+        // 6. Build RAG context
         // =========================================
 
         String retrievedContext =
                 retrievedDocuments.stream()
-                        .map(org.springframework.ai.document.Document
+                        .map(
+                                org.springframework.ai.document.Document
                                         ::getText)
-                        .filter(text -> text != null && !text.isBlank())
-                        .collect(java.util.stream.Collectors.joining("\n\n"));
-
-        // =========================================
-        // 13. Validate retrieved context
-        // =========================================
+                        .filter(
+                                text -> text != null &&
+                                        !text.isBlank())
+                        .collect(
+                                java.util.stream.Collectors.joining(
+                                        "\n\n"));
 
         if (retrievedContext.isBlank()) {
-            log.error("No relevant context found through RAG. " +
+
+            log.error(
+                    "No relevant context found through RAG. " +
                             "documentId: {}, query: {}",
                     document.getId(),
-                    quizTitle
-            );
-            throw new IllegalStateException("No relevant content found in the document "
-                    + "for quiz: " + quizTitle);
+                    quizTitle);
+
+            throw new IllegalStateException(
+                    "No relevant content found in the document " +
+                            "for quiz: " +
+                            quizTitle);
         }
 
-        log.info("RAG context created successfully. " +
+        log.info(
+                "RAG context created successfully. " +
                         "Context characters: {}",
                 retrievedContext.length());
 
         // =========================================
-        // 14. Build AI request
+        // 7. Build AI request
         // =========================================
 
         AiGenerateQuestionRequest aiRequest =
                 AiGenerateQuestionRequest.builder()
                         .extractedText(retrievedContext)
-                        .difficulty(request.getDifficulty())
-                        .numberOfQuestions(request.getNumberOfQuestions())
+                        .difficulty(
+                                request.getDifficulty())
+                        .numberOfQuestions(
+                                request.getNumberOfQuestions())
                         .build();
 
-        log.info("Sending RAG-retrieved context to AI-SERVICE. " +
+        log.info(
+                "Sending RAG-retrieved context to AI-SERVICE. " +
                         "Quiz: {}, Questions: {}, Difficulty: {}",
                 quizTitle,
                 request.getNumberOfQuestions(),
                 request.getDifficulty());
 
         // =========================================
-        // 15. Call AI-SERVICE
+        // 8. Call AI-SERVICE
         // =========================================
 
         return aiClient.generateQuestions(aiRequest);
@@ -396,53 +330,67 @@ public class QuestionServiceImpl implements QuestionService {
             ApproveGeneratedQuestionsRequest request) {
 
         log.info(
-                "Received request to approve generated questions for documentId: {}",
-                request.getDocumentId()
-        );
+                "Received request to approve generated questions. " +
+                        "quizId: {}, documentId: {}",
+                request.getQuizId(),
+                request.getDocumentId());
 
-        // 1. Validate document ID
+        // =========================================
+        // 1. Validate quiz ID
+        // =========================================
+
+        if (request.getQuizId() == null ||
+                request.getQuizId().isBlank()) {
+
+            throw new IllegalArgumentException(
+                    "Quiz ID cannot be null or empty.");
+        }
+
+        // =========================================
+        // 2. Validate document ID
+        // =========================================
+
         if (request.getDocumentId() == null ||
                 request.getDocumentId().isBlank()) {
 
             throw new IllegalArgumentException(
-                    "Document ID cannot be null or empty."
-            );
+                    "Document ID cannot be null or empty.");
         }
 
-        // 2. Validate questions
+        // =========================================
+        // 3. Validate questions
+        // =========================================
+
         if (request.getQuestions() == null ||
                 request.getQuestions().isEmpty()) {
 
             throw new IllegalArgumentException(
-                    "No generated questions found for approval."
-            );
+                    "No generated questions found for approval.");
         }
 
-        // 3. Fetch document
-        Document document = documentRepository
-                .findById(request.getDocumentId())
-                .orElseThrow(() -> {
+        String quizId = request.getQuizId();
+        String documentId = request.getDocumentId();
 
+        // =========================================
+        // 4. Fetch document
+        // =========================================
+
+        Document document = documentRepository
+                .findById(documentId)
+                .orElseThrow(() -> {
                     log.error(
                             "Document not found: {}",
-                            request.getDocumentId()
-                    );
-
+                            documentId);
                     return new RuntimeException(
-                            "Document not found: "
-                                    + request.getDocumentId()
-                    );
+                            "Document not found: " +
+                                    documentId);
                 });
 
-        String quizId = document.getQuizId();
 
-        log.info(
-                "Approving {} generated questions for quizId: {}",
-                request.getQuestions().size(),
-                quizId
-        );
+        // =========================================
+        // 5. Convert and validate generated questions
+        // =========================================
 
-        // 4. Convert and validate generated questions
         List<Question> questionsToSave =
                 request.getQuestions()
                         .stream()
@@ -453,19 +401,15 @@ public class QuestionServiceImpl implements QuestionService {
                                     q.getQuestionText().isBlank()) {
 
                                 throw new IllegalArgumentException(
-                                        "Question text cannot be empty."
-                                );
+                                        "Question text cannot be empty.");
                             }
-
                             // Validate options
                             if (q.getOptions() == null ||
                                     q.getOptions().size() != 4) {
 
                                 throw new IllegalArgumentException(
-                                        "Each question must contain exactly 4 options."
-                                );
+                                        "Each question must contain exactly 4 options.");
                             }
-
                             // Validate correct answer
                             if (q.getCorrectAnswer() < 0 ||
                                     q.getCorrectAnswer() >=
@@ -473,15 +417,17 @@ public class QuestionServiceImpl implements QuestionService {
 
                                 throw new IllegalArgumentException(
                                         "Invalid correct answer index for question: "
-                                                + q.getQuestionText()
-                                );
+                                                + q.getQuestionText());
                             }
 
                             return Question.builder()
                                     .quizId(quizId)
-                                    .questionText(q.getQuestionText())
-                                    .options(q.getOptions())
-                                    .correctAnswer(q.getCorrectAnswer())
+                                    .questionText(
+                                            q.getQuestionText())
+                                    .options(
+                                            q.getOptions())
+                                    .correctAnswer(
+                                            q.getCorrectAnswer())
                                     .build();
                         })
                         .toList();
@@ -489,68 +435,67 @@ public class QuestionServiceImpl implements QuestionService {
         log.info(
                 "Validation successful. Saving {} approved questions for quizId: {}",
                 questionsToSave.size(),
-                quizId
-        );
+                quizId);
 
-        // 5. Save questions
+        // =========================================
+        // 6. Save questions
+        // =========================================
+
         List<Question> savedQuestions =
-                questionRepository.saveAll(questionsToSave);
+                questionRepository.saveAll(
+                        questionsToSave);
 
-        int numberOfNewQuestions = savedQuestions.size();
+        int numberOfNewQuestions =
+                savedQuestions.size();
+
+        // =========================================
+        // 7. Update quiz question count
+        // =========================================
 
         log.info(
                 "Updating total question count in QUIZ-SERVICE. " +
                         "quizId: {}, newQuestions: {}",
                 quizId,
-                numberOfNewQuestions
-        );
+                numberOfNewQuestions);
 
         UpdateQuestionCountRequest updateRequest =
                 UpdateQuestionCountRequest.builder()
-                        .numberOfQuestions(numberOfNewQuestions)
+                        .numberOfQuestions(
+                                numberOfNewQuestions)
                         .build();
-
-        /**
-            QUESTION-SERVICE calling QUIZ-SERVICE
-         */
 
         QuizQuestionCountResponse response =
                 quizClient.updateQuestionCount(
                         quizId,
-                        updateRequest
-                );
+                        updateRequest);
 
         log.info(
-                "QUIZ-SERVICE updated successfully. quizId: {}, totalQuestions: {}",
+                "QUIZ-SERVICE updated successfully. " +
+                        "quizId: {}, totalQuestions: {}",
                 response.getQuizId(),
-                response.getTotalQuestions()
-        );
+                response.getTotalQuestions());
 
         log.info(
                 "{} questions saved successfully for quizId: {}",
                 savedQuestions.size(),
-                quizId
-        );
+                quizId);
 
-        // 6. Update document status
-        document.setStatus(GenerationStatus.APPROVED);
+        // =========================================
+        // 8. Return approved questions
+        // =========================================
 
-        documentRepository.save(document);
-
-        log.info(
-                "Document {} marked as APPROVED.",
-                document.getId()
-        );
-
-        // 7. Return final approved questions
         return savedQuestions.stream()
                 .map(question ->
                         AdminQuestionDto.builder()
                                 .id(question.getId())
-                                .quizId(question.getQuizId())
-                                .questionText(question.getQuestionText())
-                                .options(question.getOptions())
-                                .correctAnswer(question.getCorrectAnswer())
+                                .quizId(
+                                        question.getQuizId())
+                                .questionText(
+                                        question.getQuestionText())
+                                .options(
+                                        question.getOptions())
+                                .correctAnswer(
+                                        question.getCorrectAnswer())
                                 .build()
                 )
                 .toList();

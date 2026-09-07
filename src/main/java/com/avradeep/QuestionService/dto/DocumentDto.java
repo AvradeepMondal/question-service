@@ -1,6 +1,8 @@
 package com.avradeep.QuestionService.dto;
 
+import com.avradeep.QuestionService.entity.DocumentStatus;
 import com.avradeep.QuestionService.entity.FileType;
+import com.avradeep.QuestionService.entity.GenerationStatus;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -19,4 +21,6 @@ public class DocumentDto {
     private String fileName;
 
     private FileType fileType;
+
+    private DocumentStatus status;
 }

@@ -2,6 +2,7 @@ package com.avradeep.QuestionService.controller;
 
 import com.avradeep.QuestionService.dto.*;
 import com.avradeep.QuestionService.entity.Document;
+import com.avradeep.QuestionService.service.DocumentProcessingService;
 import com.avradeep.QuestionService.service.DocumentService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
@@ -19,6 +20,7 @@ import java.util.List;
 public class DocumentController {
 
     private final DocumentService documentService;
+    private final DocumentProcessingService documentProcessingService;
 
     /**
      * Upload a source document (PDF/DOCX/JPG/PNG)
@@ -58,5 +60,19 @@ public class DocumentController {
         documentService.deleteByQuizId(request);
 
         return ResponseEntity.noContent().build();
+    }
+
+    /**
+        testing
+     */
+    @PostMapping("/{documentId}/process")
+    public ResponseEntity<String> processDocument(
+            @PathVariable String documentId) {
+
+        documentProcessingService.processDocument(documentId);
+
+        return ResponseEntity.ok(
+                "Document processing started for: " + documentId
+        );
     }
 }

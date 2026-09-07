@@ -1,6 +1,7 @@
 package com.avradeep.QuestionService.entity;
 import lombok.*;
 import org.springframework.data.annotation.Id;
+import org.springframework.data.mongodb.core.index.Indexed;
 
 import java.util.Date;
 
@@ -14,9 +15,6 @@ public class Document {
     @Id
     private String id;
 
-    // Quiz for which this document is uploaded
-    private String quizId;
-
     // Original uploaded file name
     private String fileName;
 
@@ -26,14 +24,18 @@ public class Document {
     // Location where the file is stored
     private String filePath;
 
+    @Indexed(unique = true)
+    private String fileHash;
+
     // Extracted text from the document
     private String extractedText;
 
     // Current processing status
-    private GenerationStatus status;
+    private DocumentStatus status;
 
     // User(Admin) who uploaded the document
     private String uploadedBy;
 
     private Date uploadedAt;
+
 }

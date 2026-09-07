@@ -1,5 +1,6 @@
 package com.avradeep.QuestionService.dto;
 
+import com.avradeep.QuestionService.entity.DocumentStatus;
 import com.avradeep.QuestionService.entity.FileType;
 import com.avradeep.QuestionService.entity.GenerationStatus;
 import lombok.AllArgsConstructor;
@@ -21,5 +22,5 @@ public class DocumentUploadResponse {
 
     private FileType fileType;
 
-    private GenerationStatus status;
+    private DocumentStatus status;
 }

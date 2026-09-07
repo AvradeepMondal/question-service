@@ -1,11 +1,13 @@
 package com.avradeep.QuestionService.service;
 
+import com.avradeep.QuestionService.client.QuizClient;
 import com.avradeep.QuestionService.dto.*;
 import com.avradeep.QuestionService.entity.Document;
+import com.avradeep.QuestionService.entity.DocumentStatus;
 import com.avradeep.QuestionService.entity.FileType;
-import com.avradeep.QuestionService.entity.GenerationStatus;
 import com.avradeep.QuestionService.repository.DocumentRepository;
 import com.avradeep.QuestionService.util.extractor.FileValidator;
+import com.avradeep.QuestionService.util.hash.FileHashUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -17,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -28,65 +31,156 @@ public class DocumentServiceImpl implements DocumentService {
 
     private final DocumentRepository documentRepository;
     private final FileValidator fileValidator;
+    private final DocumentProcessingService documentProcessingService;
+    private final QuizClient quizClient;
 
     @Override
     public DocumentUploadResponse uploadDocument(
             String quizId,
             MultipartFile file) {
 
-        log.info("Received document upload request for quizId: {}", quizId);
+        log.info(
+                "Received document upload request for quizId: {}",
+                quizId);
 
         fileValidator.validate(file);
 
-        log.info("File validation successful. File Name: {}",
+        log.info(
+                "File validation successful. File Name: {}",
                 file.getOriginalFilename());
 
         try {
 
-            File directory = new File(UPLOAD_DIR);
+            // ==============================
+            // 1. Calculate SHA-256
+            // ==============================
+
+            String fileHash =
+                    FileHashUtil.calculateSHA256(file);
+
+            log.info(
+                    "SHA-256 calculated for file: {}",
+                    file.getOriginalFilename());
+
+            // ==============================
+            // 2. Check existing document
+            // ==============================
+
+            Optional<Document> existingDocument =
+                    documentRepository.findByFileHash(fileHash);
+
+            if (existingDocument.isPresent()) {
+
+                Document document =
+                        existingDocument.get();
+
+                log.info(
+                        "Document already exists. Reusing documentId: {}",
+                        document.getId());
+
+                // Attach existing document to quiz
+                quizClient.addDocumentToQuiz(
+                        quizId,
+                        document.getId());
+
+                return DocumentUploadResponse.builder()
+                        .documentId(document.getId())
+                        .quizId(quizId)
+                        .fileName(document.getFileName())
+                        .fileType(document.getFileType())
+                        .status(document.getStatus())
+                        .build();
+            }
+
+            // ==============================
+            // 3. Create upload directory
+            // ==============================
+
+            File directory =
+                    new File(UPLOAD_DIR);
 
             if (!directory.exists()) {
+
                 directory.mkdirs();
-                log.info("Upload directory created at: {}",
+
+                log.info(
+                        "Upload directory created at: {}",
                         directory.getAbsolutePath());
             }
 
-            String originalFileName = file.getOriginalFilename();
+            // ==============================
+            // 4. Store physical file
+            // ==============================
+
+            String originalFileName =
+                    file.getOriginalFilename();
 
             String uniqueFileName =
-                    UUID.randomUUID() + "_" + originalFileName;
+                    UUID.randomUUID()
+                            + "_"
+                            + originalFileName;
 
             Path filePath =
-                    Paths.get(UPLOAD_DIR, uniqueFileName);
+                    Paths.get(
+                            UPLOAD_DIR,
+                            uniqueFileName);
 
-            Files.copy(file.getInputStream(), filePath);
+            Files.copy(
+                    file.getInputStream(),
+                    filePath);
 
-            log.info("File stored successfully at: {}",
+            log.info(
+                    "File stored successfully at: {}",
                     filePath.toAbsolutePath());
 
-            Document document = Document.builder()
-                    .quizId(quizId)
-                    .fileName(originalFileName)
-                    .fileType(FileType.fromFileName(originalFileName))
-                    .filePath(filePath.toString())
-                    .status(GenerationStatus.UPLOADED)
-                    .build();
+            // ==============================
+            // 5. Create Document
+            // ==============================
+
+            Document document =
+                    Document.builder()
+                            .fileName(originalFileName)
+                            .fileType(
+                                    FileType.fromFileName(
+                                            originalFileName))
+                            .filePath(filePath.toString())
+                            .fileHash(fileHash)
+                            .status(DocumentStatus.UPLOADED)
+                            .build();
 
             Document savedDocument =
                     documentRepository.save(document);
 
             log.info(
-                    "Document metadata saved successfully. DocumentId: {}, QuizId: {}",
-                    savedDocument.getId(),
-                    savedDocument.getQuizId()
-            );
-
-            log.info("Document uploaded successfully. Document Id: {}",
+                    "Document metadata saved successfully. DocumentId: {}",
                     savedDocument.getId());
+
+            // ==============================
+            // 6. Attach document to quiz
+            // ==============================
+
+            quizClient.addDocumentToQuiz(
+                    quizId,
+                    savedDocument.getId());
+
+            // ==============================
+            // 7. Process document
+            // ==============================
+
+            documentProcessingService.processDocument(
+                    savedDocument.getId());
+
+            log.info(
+                    "Document uploaded successfully. Document Id: {}",
+                    savedDocument.getId());
+
+            // ==============================
+            // 8. Return response
+            // ==============================
 
             return DocumentUploadResponse.builder()
                     .documentId(savedDocument.getId())
-                    .quizId(savedDocument.getQuizId())
+                    .quizId(quizId)
                     .fileName(savedDocument.getFileName())
                     .fileType(savedDocument.getFileType())
                     .status(savedDocument.getStatus())
@@ -94,10 +188,13 @@ public class DocumentServiceImpl implements DocumentService {
 
         } catch (IOException e) {
 
-            log.error("Failed to upload document.", e);
+            log.error(
+                    "Failed to upload document.",
+                    e);
 
             throw new RuntimeException(
-                    "Unable to upload document.");
+                    "Unable to upload document.",
+                    e);
         }
     }
 
@@ -106,23 +203,22 @@ public class DocumentServiceImpl implements DocumentService {
 
         log.info("Fetching all documents for quizId: {}", quizId);
 
-        List<Document> documents = documentRepository.findByQuizId(quizId);
+        List<String> documentIds =
+                quizClient.getDocumentIdsByQuizId(quizId);
+
+        List<Document> documents =
+                documentRepository.findAllById(documentIds);
 
         log.info("Found {} document(s) for quizId: {}",
                 documents.size(), quizId);
 
-        /**
-         *  String documentId;
-         *  String quizId;
-         *  String fileName;
-         *  FileType fileType;
-         */
         return documents.stream()
                 .map(document -> DocumentDto.builder()
                         .documentId(document.getId())
-                        .quizId(document.getQuizId())
+                        .quizId(quizId)
                         .fileName(document.getFileName())
                         .fileType(document.getFileType())
+                        .status(document.getStatus())
                         .build())
                 .toList();
     }
@@ -130,59 +226,18 @@ public class DocumentServiceImpl implements DocumentService {
     @Override
     public void deleteByQuizId(DeleteDocumentRequest request) {
 
-        log.info("Received request to delete document {} for quiz {}",
+        log.info(
+                "Removing document {} from quiz {}",
                 request.getDocumentId(),
                 request.getQuizId());
 
-        Document document = documentRepository
-                .findByIdAndQuizId(
-                        request.getDocumentId(),
-                        request.getQuizId()
-                )
-                .orElseThrow(() -> {
+        quizClient.removeDocumentFromQuiz(
+                request.getQuizId(),
+                request.getDocumentId());
 
-                    log.error("Document {} not found for quiz {}",
-                            request.getDocumentId(),
-                            request.getQuizId());
-
-                    return new RuntimeException(
-                            "Document " + request.getDocumentId()
-                                    + " does not belong to quiz "
-                                    + request.getQuizId()
-                    );
-                });
-
-        // Delete the physical file
-        try {
-
-            Path filePath = Paths.get(document.getFilePath());
-
-            if (Files.exists(filePath)) {
-
-                Files.delete(filePath);
-
-                log.info("Deleted file from storage: {}",
-                        document.getFilePath());
-
-            } else {
-
-                log.warn("File not found on disk: {}",
-                        document.getFilePath());
-            }
-
-        } catch (IOException e) {
-
-            log.error("Failed to delete file: {}",
-                    document.getFilePath(), e);
-
-            throw new RuntimeException(
-                    "Unable to delete document file.", e);
-        }
-
-        // Delete MongoDB record
-        documentRepository.delete(document);
-
-        log.info("Document {} deleted successfully.",
-                document.getId());
+        log.info(
+                "Document {} successfully removed from quiz {}",
+                request.getDocumentId(),
+                request.getQuizId());
     }
 }

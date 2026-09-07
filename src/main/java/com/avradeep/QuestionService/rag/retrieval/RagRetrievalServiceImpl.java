@@ -53,7 +53,6 @@ public class RagRetrievalServiceImpl
             log.info("Content: {}", doc.getText());
         }
 
-        return vectorStore.similaritySearch(
-                searchRequest);
+        return results;
     }
 }

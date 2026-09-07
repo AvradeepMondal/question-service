@@ -7,6 +7,8 @@ import lombok.Data;
 @Builder
 public class GenerateQuestionRequest {
 
+    private String quizId;;
+
     private String documentId;
 
     private int numberOfQuestions;
