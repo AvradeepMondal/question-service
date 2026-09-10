@@ -2,6 +2,7 @@ package com.avradeep.QuestionService.controller;
 
 
 import com.avradeep.QuestionService.dto.AdminQuestionDto;
+import com.avradeep.QuestionService.dto.QuestionEvaluationDto;
 import com.avradeep.QuestionService.dto.UserQuestionDto;
 import com.avradeep.QuestionService.service.QuestionService;
 import lombok.RequiredArgsConstructor;
@@ -35,4 +36,22 @@ public class QuestionController {
         return ResponseEntity.ok(questions);
     }
 
+    @GetMapping("/{quizId}/evaluation")
+    public ResponseEntity<List<QuestionEvaluationDto>> getQuestionsForEvaluation(
+            @PathVariable String quizId) {
+
+        List<QuestionEvaluationDto> questions =
+                questionService.getQuestionsByQuizId(quizId)
+                        .stream()
+                        .map(q -> QuestionEvaluationDto.builder()
+                                .id(q.getId())
+                                .quizId(q.getQuizId())
+                                .questionText(q.getQuestionText())
+                                .options(q.getOptions())
+                                .correctAnswer(q.getCorrectAnswer())
+                                .build())
+                        .toList();
+
+        return ResponseEntity.ok(questions);
+    }
 }
